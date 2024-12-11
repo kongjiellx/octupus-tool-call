@@ -58,19 +58,29 @@ def apply_chat_template(messages, functions, tokenizer, add_generation_token=Tru
         system_msg += f"\n\n{FUNCTION_SUFIX}{json.dumps(functions, ensure_ascii=False)}"
     text += system_msg
 
-    for msg in messages:
+    tool_rsp_cache = []
+    for i, msg in enumerate(messages):
         if msg["role"] == "user":
             text += f"{USER_TOKEN}{msg['content']}"
         elif msg["role"] == "assistant":
             assistant_text = ASSISTANT_TOKEN + (f"{CONTENT_TOKEN}{msg['content']}" if msg["content"] else "")
-            fcs = msg.get("function_call")
+            fcs = msg.get("tool_calls")
             if fcs:
-                fcs = json.loads(fcs)
                 for fc in fcs:
-                    assistant_text += f"{FUNCTION_CALL_TOKEN}{fc['name']}{PARAMETERS_TOKEN}{json.dumps(fc['arguments'], ensure_ascii=False)}"
+                    assistant_text += f"{FUNCTION_CALL_TOKEN}{fc['function']['name']}{PARAMETERS_TOKEN}{json.dumps(fc['function']['arguments'], ensure_ascii=False)}"
             text += assistant_text + tokenizer.eos_token
-        elif msg["role"] == "function":
-            text += FUNCITON_OUTPUT_TOKEN + msg['content']
+        elif msg["role"] == "tool":
+            # https://platform.openai.com/docs/guides/function-calling#integration-guide:~:text=.-,Parallel%20tool%20calling,-Forcing%20tool%20calls
+            # 根据上面链接，多个tool调用结果是多条message，但是目前训练的时候作为一个message了（见hermes.ipynb），先恶心处理
+            tool_rsp_cache.append(msg)
+            if i == len(messages) - 1 or messages[i + 1]["role"] != "tool":
+                contents = []
+                for m in tool_rsp_cache:
+                    try:
+                        contents.append(json.loads(m["content"]))
+                    except:
+                        contents.append(m["content"])
+                text += FUNCITON_OUTPUT_TOKEN + json.dumps(contents, ensure_ascii=False)
     if add_generation_token:
         text += ASSISTANT_TOKEN
     return text
@@ -350,7 +360,7 @@ async def stream_results(results_generator, stream: bool) -> AsyncGenerator[
                             id=random_uuid(),
                             type="function",
                             function=chat_message_tool_call_types.Function(
-                                name=r["name"], arguments=r["arguments"], type="function"
+                                name=r["name"], arguments=r["arguments"]
                             )
                         ) for r in result["tool_calls"]],
                         role="assistant"
