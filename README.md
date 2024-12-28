@@ -1,6 +1,7 @@
 # octupus-tool-call
 
 [[English](https://github.com/kongjiellx/octupus-tool-call/blob/main/README-en.md)|中文]
+
 ## 项目简介
 这是一个专注于训练tool call（function calling）模型的项目，将把模型训练过程的所有数据、代码、模型、及推理方案都开源。
 
@@ -19,16 +20,11 @@
 
 ## 目录介绍
 - utils/edit_tokenizer_and_model.py 编辑词表，增加特殊token，并且使用相关的token进行初始化
-- versions/v1 第一版模型的训练脚本（后续模型更新会增加v2 v3等等）
+- run 模型训练脚本
     - train_stg1.sh
-        - qwen2.5-72b-instruct对openhermes2.5 1M数据重新回答
-        - wild chat
+        - 仅使用chat格式数据训练
     - train_stg2.sh
-        - 在stg1的checkpoint上继续训练
-        - 混合少量stg1的数据
-        - NousResearch/hermes-function-calling-v1 数据
-        - hqfx/fc_zh_hard （比较长的中文fc数据，使用gpt4合成）
-    - stg1训练使用32张GPU，stg2使用8张GPU，其余参数见训练脚本
+        - 在stg1基础上继续训练，混合chat和function call数据训练
 - inference
     - openai兼容的模型服务，使用structured outputs技术
     - 使用方法：python oai_server.py --model /your/model --tensor-parallel-size 1 --max-model-len 8192
@@ -44,11 +40,42 @@ OPENAI_BASE_URL=http://localhost:8000 bfcl generate --model gpt-4-turbo-2024-04-
 ## 迭代记录
 ### V1
 
-模型和数据: https://huggingface.co/collections/hqfx/hqfx-octupus-tool-call-v1-6752bc1b3d5dc4e06f394e59
+#### 数据
+- stg1
+    - 使用qwen2.5-72b-instruct重新回答了[open-hermes](https://huggingface.co/datasets/teknium/OpenHermes-2.5)
+    - [wild-chat](https://huggingface.co/datasets/allenai/WildChat)里的中英数据
+- stg2
+    - [hermes-function-calling](https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1)
+    - [自己构造的中文长function calling数据](https://huggingface.co/datasets/hqfx/fc_zh_hard)
+    - function call数据都经过了一些筛选逻辑，具体代码见data目录
 
-测评结果: 
+#### 模型和数据地址
+https://huggingface.co/collections/hqfx/hqfx-octupus-tool-call-v1-6752bc1b3d5dc4e06f394e59
+
+#### 测评结果
 | Overall Acc | Model                        | Non-Live AST Acc | Non-Live Simple AST | Non-Live Multiple AST | Non-Live Parallel AST | Non-Live Parallel Multiple AST | Non-Live Exec Acc | Non-Live Simple Exec | Non-Live Multiple Exec | Non-Live Parallel Exec | Non-Live Parallel Multiple Exec | Live Acc | Live Simple AST | Live Multiple AST | Live Parallel AST | Live Parallel Multiple AST | Multi Turn Acc | Multi Turn Base | Multi Turn Miss Func | Multi Turn Miss Param | Multi Turn Long Context | Relevance Detection | Irrelevance Detection |
 |-------------|-----------------------------|------------------|---------------------|-----------------------|-----------------------|-------------------------------|------------------|---------------------|-----------------------|-----------------------|-------------------------------|---------|----------------|------------------|------------------|--------------------------|---------------|----------------|--------------------|--------------------|-----------------------|------------------|------------------|
 | 52.21%      | hqfx/octupus-tool-call-v1 | 80.69%           | 65.25%              | 94.00%               | 82.50%               | 81.00%                         | 83.70%           | 88.29%              | 92.00%               | 82.00%               | 72.50%                         | 73.92%  | 66.28%         | 69.72%           | 31.25%           | 33.33%                  | 0.12%         | 0.00%          | 0.00%              | 0.50%              | 0.00%                | 73.17%           | 84.46%           |
 
 在[BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html)上面可以排到30名，微幅超过gpt-3.5，multi_turn基本得了0分，还没仔细分析，后续再重点优化。
+
+### V2
+
+#### 数据
+- stg2增加了清洗过的[ToolAce](https://huggingface.co/datasets/Team-ACE/ToolACE)数据，清洗脚本见data目录
+- 把数据格式都改成了openai的tool calls格式，训练和推理也随之进行适配
+
+#### 推理服务
+- 简化了代码，解决了一些之前的bug，如支持函数名互为前缀的情况
+
+#### 模型和数据地址
+https://huggingface.co/collections/hqfx/octupus-tool-call-v2-676fa1c11c48eff17fa1c017
+
+#### 测评结果
+| Overall Acc | Model                        | Non-Live AST Acc | Non-Live Simple AST | Non-Live Multiple AST | Non-Live Parallel AST | Non-Live Parallel Multiple AST | Non-Live Exec Acc | Non-Live Simple Exec | Non-Live Multiple Exec | Non-Live Parallel Exec | Non-Live Parallel Multiple Exec | Live Acc | Live Simple AST | Live Multiple AST | Live Parallel AST | Live Parallel Multiple AST | Multi Turn Acc | Multi Turn Base | Multi Turn Miss Func | Multi Turn Miss Param | Multi Turn Long Context | Relevance Detection | Irrelevance Detection |
+|-------------|-----------------------------|------------------|---------------------|-----------------------|-----------------------|-------------------------------|------------------|---------------------|-----------------------|-----------------------|-------------------------------|---------|----------------|------------------|------------------|--------------------------|---------------|----------------|--------------------|--------------------|-----------------------|------------------|------------------|
+| 52.21%      | hqfx/octupus-tool-call-v1   | 80.69%           | 65.25%              | 94.00%               | 82.50%               | 81.00%                         | 83.70%           | 88.29%              | 92.00%               | 82.00%               | 72.50%                         | 73.92%  | 66.28%         | 69.72%           | 31.25%           | 33.33%                  | 0.12%         | 0.00%          | 0.00%              | 0.50%              | 0.00%                | 73.17%           | 84.46%           |
+| 55.69%      | hqfx/octupus-tool-call-v2     | 84.65%           | 69.08%              | 93.00%               | 90.00%               | 86.50%                         | 78.48%           | 83.43%              | 86.00%               | 82.00%               | 62.50%                         | 79.52%  | 71.32%         | 73.88%           | 62.50%           | 66.67%                  | 4.50%         | 8.00%          | 1.00%              | 6.50%              | 2.50%                | 66.67%           | 92.28%           |
+
+
+在[BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html)上面可以排到25名，multi_turn有了一些提升。

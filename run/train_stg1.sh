@@ -29,7 +29,7 @@ torchrun ${CLUSTER_ARGS} \
     --gradient_accumulation_steps 1 \
     --model_name_or_path "models/qwen2.5-7b-edited" \
     --tokenizer_name_or_path "models/qwen2.5-7b-edited" \
-    --data_path "versions/v1/stg1.conf" \
+    --data_path "run/stg1.conf" \
     --gradient_checkpointing true \
     --num_train_epochs 2 \
     --max_grad_norm 10 \

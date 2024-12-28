@@ -23,16 +23,16 @@ torchrun ${CLUSTER_ARGS} \
     --deepspeed "conf/ds_config_zero2.json" \
     --optim "adamw_torch" \
     --learning_rate 2e-5 \
-    --output_dir "models/v1/stg2" \
-    --per_device_train_batch_size 4 \
+    --output_dir "models/v2/stg2" \
+    --per_device_train_batch_size 2 \
     --gradient_accumulation_steps 1 \
     --model_name_or_path "models/v1/stg1/checkpoint-xxxx" \
     --tokenizer_name_or_path "models/qwen2.5-7b-edited" \
-    --data_path "versions/v1/stg2.conf" \
+    --data_path "run/stg2.conf" \
     --gradient_checkpointing true \
-    --num_train_epochs 2 \
-    --max_grad_norm 10 \
-    --model_max_length 4096 \
+    --num_train_epochs 1 \
+    --max_grad_norm 3 \
+    --model_max_length 8192 \
     --lr_scheduler_type "cosine_with_min_lr" \
     --lr_scheduler_kwargs '{"min_lr": 1e-6}' \
     --save_steps 200 \

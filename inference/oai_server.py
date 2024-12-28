@@ -32,9 +32,6 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.utils import random_uuid
 
-# from string_parser_patch import StringParsingState
-# lmformatenforcer.jsonschemaparser.StringParsingState = StringParsingState
-
 
 SYSTEM_TOKEN = "<|SYSTEM|>"
 USER_TOKEN = "<|USER|>"
@@ -44,22 +41,21 @@ PARAMETERS_TOKEN = "<|PARAMETERS|>"
 FUNCITON_OUTPUT_TOKEN = "<|FUNCTION_OUTPUT|>"
 CONTENT_TOKEN = "<|CONTENT|>"
 DEFAULT_SYSTEM_MESSAGE = "You are a helpful assistant."
-FUNCTION_SUFIX = "你可以使用这些函数来帮助用户解决问题: "
+FUNCTION_SUFIX = "你可以使用这些工具来帮助用户解决问题: "
 
 
-def apply_chat_template(messages, functions, tokenizer, add_generation_token=True):
+def apply_chat_template(messages, tools, tokenizer, add_generation_token=True):
     text = ""
     if messages[0]["role"] == "system":
         system_msg = f"{SYSTEM_TOKEN}{messages[0]['content']}"
         messages = messages[1:]
     else:
         system_msg = f"{SYSTEM_TOKEN}{DEFAULT_SYSTEM_MESSAGE}"
-    if functions:
-        system_msg += f"\n\n{FUNCTION_SUFIX}{json.dumps(functions, ensure_ascii=False)}"
+    if tools:
+        system_msg += f"\n\n{FUNCTION_SUFIX}{json.dumps(tools, ensure_ascii=False)}"
     text += system_msg
 
-    tool_rsp_cache = []
-    for i, msg in enumerate(messages):
+    for msg in messages:
         if msg["role"] == "user":
             text += f"{USER_TOKEN}{msg['content']}"
         elif msg["role"] == "assistant":
@@ -67,20 +63,12 @@ def apply_chat_template(messages, functions, tokenizer, add_generation_token=Tru
             fcs = msg.get("tool_calls")
             if fcs:
                 for fc in fcs:
-                    assistant_text += f"{FUNCTION_CALL_TOKEN}{fc['function']['name']}{PARAMETERS_TOKEN}{json.dumps(fc['function']['arguments'], ensure_ascii=False)}"
+                    assistant_text += f"{FUNCTION_CALL_TOKEN}{fc['function']['name']}{PARAMETERS_TOKEN}{fc['function']['arguments']}"
             text += assistant_text + tokenizer.eos_token
         elif msg["role"] == "tool":
             # https://platform.openai.com/docs/guides/function-calling#integration-guide:~:text=.-,Parallel%20tool%20calling,-Forcing%20tool%20calls
-            # 根据上面链接，多个tool调用结果是多条message，但是目前训练的时候作为一个message了（见hermes.ipynb），先恶心处理
-            tool_rsp_cache.append(msg)
-            if i == len(messages) - 1 or messages[i + 1]["role"] != "tool":
-                contents = []
-                for m in tool_rsp_cache:
-                    try:
-                        contents.append(json.loads(m["content"]))
-                    except:
-                        contents.append(m["content"])
-                text += FUNCITON_OUTPUT_TOKEN + json.dumps(contents, ensure_ascii=False)
+            # 根据上面链接，多个tool调用结果是多条message
+            text += FUNCITON_OUTPUT_TOKEN + msg["content"]
     if add_generation_token:
         text += ASSISTANT_TOKEN
     return text
@@ -149,9 +137,8 @@ class VLLMLogitsProcessor(object):
     
         for f in self.functions:
             name = f["name"]
-            self.fname_to_id[name] = tokenizer.encode(name, add_special_tokens=False)
+            self.fname_to_id[name] = tokenizer.encode(name, add_special_tokens=False) + [self.tokenizer.convert_tokens_to_ids(PARAMETERS_TOKEN)]
 
-        self.text_cache = ""
         self.id_cache = []
         self.enforcer = None
 
@@ -182,27 +169,23 @@ class VLLMLogitsProcessor(object):
                 self.state = State.SELECT
         elif self.state == State.SELECT:
             self.select_cache.append(input_ids[-1])
-            for k, v in self.fname_to_id.items():  # 不考虑函数名互为前缀情况
-                if self.select_cache == v:
-                    self.select_cache = []
-                    self.state = State.PARAMS
-                    self.text_cache += PARAMETERS_TOKEN
-                    for f in self.functions:
-                        if f["name"] == k:
-                            schema = f["parameters"]
-                            try:
-                                self.enforcer = TokenEnforcer(self.tokenizer_data, JsonSchemaParser(schema))
-                            except Exception as e:
-                                logging.exception(e)
-                                print(f"error schema: {schema}")
-                    break
+            if input_ids[-1] == self.tokenizer.convert_tokens_to_ids(PARAMETERS_TOKEN):
+                self.state = State.PARAMS
+                for k, v in self.fname_to_id.items():
+                    if self.select_cache == v:
+                        self.select_cache = []
+                        for f in self.functions:
+                            if f["name"] == k:
+                                schema = f["parameters"]
+                                try:
+                                    self.enforcer = TokenEnforcer(self.tokenizer_data, JsonSchemaParser(schema))
+                                except Exception as e:
+                                    logging.exception(e)
+                                    print(f"error schema: {schema}")
         elif self.state == State.PARAMS:
             if input_ids[-1] == self.tokenizer.convert_tokens_to_ids(FUNCTION_CALL_TOKEN):
                 self.state = State.SELECT
 
-        if not self.id_cache and self.text_cache:
-            self.id_cache = self.tokenizer.encode(self.text_cache, add_special_tokens=False)
-            self.text_cache = ""
         if self.id_cache:
             direct_id = self.id_cache.pop(0)
             self.mask[direct_id] = 0
@@ -257,8 +240,7 @@ class VLLMLogitsProcessor(object):
         return scores + self.mask
 
 
-async def stream_results(results_generator, stream: bool) -> AsyncGenerator[
-    bytes, None]:
+async def stream_results(results_generator, stream: bool) -> AsyncGenerator[bytes, None]:
     gen_text = ""
     gen_token_ids = []
     rid = str(uuid.uuid4())
@@ -272,7 +254,7 @@ async def stream_results(results_generator, stream: bool) -> AsyncGenerator[
         # print(f"gen_ids: {request_output.outputs[0].token_ids}")
         chunk = request_output.outputs[0].text[len(gen_text):]
         token_id = request_output.outputs[0].token_ids[len(gen_token_ids):][0]
-        # print(state, chunk if chunk else tokenizer.convert_ids_to_tokens(token_id)[0])
+        # print(state, chunk if chunk else tokenizer.convert_ids_to_tokens(token_id))
         gen_text = request_output.outputs[0].text
         gen_token_ids = request_output.outputs[0].token_ids
 
@@ -288,118 +270,50 @@ async def stream_results(results_generator, stream: bool) -> AsyncGenerator[
 
         if state == State.CONTENT:
             result["content"] += chunk
-            yield format_sse(chat_chunk_types.ChatCompletionChunk(
-                id=rid,
-                choices=[chat_chunk_types.Choice(
-                    index=0,
-                    delta=chat_chunk_types.ChoiceDelta(content=chunk),
-                )],
-                created=int(time.time()),
-                model=model,
-                object="chat.completion.chunk"
-            ))
         elif state == State.SELECT:
             tool_call_cache["name"] += chunk
         elif state == State.PARAMS and token_id != tokenizer.eos_token_id:
-            if not tool_call_cache["arguments"]:  # only once
-                yield format_sse(chat_chunk_types.ChatCompletionChunk(
-                    id=rid,
-                    choices=[chat_chunk_types.Choice(
-                        index=0,
-                        delta=chat_chunk_types.ChoiceDelta(
-                            tool_calls=[chat_chunk_types.ChoiceDeltaToolCall(
-                                index=len(result["tool_calls"]),
-                                function=chat_chunk_types.ChoiceDeltaToolCallFunction(name=tool_call_cache["name"])
-                            )]
-                        )
-                    )],
-                    created=int(time.time()),
-                    model=model,
-                    object="chat.completion.chunk"
-                ))
-
             tool_call_cache["arguments"] += chunk
-            yield format_sse(chat_chunk_types.ChatCompletionChunk(
-                id=rid,
-                choices=[chat_chunk_types.Choice(
-                    index=0,
-                    delta=chat_chunk_types.ChoiceDelta(
-                        tool_calls=[chat_chunk_types.ChoiceDeltaToolCall(
-                            index=len(result["tool_calls"]),
-                            function=chat_chunk_types.ChoiceDeltaToolCallFunction(arguments=chunk)
-                        )]
-                    )
-                )],
-                created=int(time.time()),
-                model=model,
-                object="chat.completion.chunk"
-            ))
 
     if state == State.PARAMS:
-        if stream:
-            yield format_sse(chat_chunk_types.ChatCompletionChunk(
-                id=rid,
-                choices=[chat_chunk_types.Choice(
-                    index=0,
-                    delta=chat_chunk_types.ChoiceDelta(),
-                    finish_reason="tool_calls"
-                )],
-                created=int(time.time()),
-                model=model,
-                object="chat.completion.chunk"
-            ))
-        else:
-            yield chat_types.ChatCompletion(
-                id=rid,
-                choices=[chat_types.Choice(
-                    finish_reason="tool_calls",
-                    index=0,
-                    message=chat_types.ChatCompletionMessage(
-                        content=result["content"] if result["content"] else None,
-                        tool_calls=[chat_message_tool_call_types.ChatCompletionMessageToolCall(
-                            id=random_uuid(),
-                            type="function",
-                            function=chat_message_tool_call_types.Function(
-                                name=r["name"], arguments=r["arguments"]
-                            )
-                        ) for r in result["tool_calls"]],
-                        role="assistant"
-                    )
-                )],
-                created=int(time.time()),
-                usage=CompletionUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),  # 为了bfcl不报错
-                model=model,
-                object="chat.completion"
-            )
+        yield chat_types.ChatCompletion(
+            id=rid,
+            choices=[chat_types.Choice(
+                finish_reason="tool_calls",
+                index=0,
+                message=chat_types.ChatCompletionMessage(
+                    content=result["content"] if result["content"] else None,
+                    tool_calls=[chat_message_tool_call_types.ChatCompletionMessageToolCall(
+                        id=random_uuid(),
+                        type="function",
+                        function=chat_message_tool_call_types.Function(
+                            name=r["name"], arguments=r["arguments"]
+                        )
+                    ) for r in result["tool_calls"]],
+                    role="assistant"
+                )
+            )],
+            created=int(time.time()),
+            usage=CompletionUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),  # 为了bfcl不报错
+            model=model,
+            object="chat.completion"
+        )
     else:
-        if stream:
-            yield format_sse(chat_chunk_types.ChatCompletionChunk(
-                id=rid,
-                choices=[chat_chunk_types.Choice(
-                    index=0,
-                    delta=chat_chunk_types.ChoiceDelta(),
-                    finish_reason="stop"
-                )],
-                created=int(time.time()),
-                model=model,
-                object="chat.completion.chunk"
-            ))
-        else:
-            yield chat_types.ChatCompletion(
-                id=rid,
-                choices=[chat_types.Choice(
-                    finish_reason="stop",
-                    index=0,
-                    message=chat_types.ChatCompletionMessage(
-                        content=result["content"],
-                        role="assistant"
-                    )
-                )],
-                created=int(time.time()),
-                usage=CompletionUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
-                model=model,
-                object="chat.completion"
-            )
+        yield chat_types.ChatCompletion(
+            id=rid,
+            choices=[chat_types.Choice(
+                finish_reason="stop",
+                index=0,
+                message=chat_types.ChatCompletionMessage(
+                    content=result["content"],
+                    role="assistant"
+                )
+            )],
+            created=int(time.time()),
+            usage=CompletionUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            model=model,
+            object="chat.completion"
+        )
 
 
 @app.post("/chat/completions")
@@ -412,20 +326,16 @@ async def chat_completion(request: Request) -> Response:
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    functions = []
-    if tools := req.get("tools"):
-        functions = [t["function"] for t in tools]
-        
-    prompt = apply_chat_template(req["messages"], functions, tokenizer)
+    prompt = apply_chat_template(req["messages"], req.get("tools"), tokenizer)
     token_ids = tokenizer.encode(prompt, add_special_tokens=False)
     print(f"req tokens: {len(token_ids)}")
     
     sampling_params = SamplingParams(
         max_tokens=req.get("max_tokens", 1024), 
-        temperature=req.get("temperature", 0.3),
-        presence_penalty=req.get("presence_penalty", 0.15),
-        frequency_penalty=req.get("frequency_penalty", 0.15), 
-        repetition_penalty=1.05,
+        temperature=req.get("temperature", 0.01),
+        # presence_penalty=req.get("presence_penalty", 0.15),
+        # frequency_penalty=req.get("frequency_penalty", 0.15), 
+        # repetition_penalty=1.05,
     )
     processor = VLLMLogitsProcessor(req, tokenizer, tokenizer_data)
     sampling_params.logits_processors = [processor]
@@ -438,18 +348,15 @@ async def chat_completion(request: Request) -> Response:
             request_id=request_id
         )
         generator = stream_results(results_generator, req["stream"])
-        if req["stream"]:
-            return StreamingResponse(generator, media_type="text/event-stream")
-        else:
-            final_output = None
-            async for request_output in generator:
-                if await request.is_disconnected():
-                    await engine.abort(request_id)
-                    return Response(status_code=499)
-                final_output = request_output
+        final_output = None
+        async for request_output in generator:
+            if await request.is_disconnected():
+                await engine.abort(request_id)
+                return Response(status_code=499)
+            final_output = request_output
 
-            assert final_output is not None
-            return JSONResponse(final_output.dict())
+        assert final_output is not None
+        return JSONResponse(final_output.dict())
     except Exception as e:
         logging.exception(e)
         return JSONResponse({"error": "unknown error"})

@@ -59,11 +59,11 @@ def buid_instruction_dataset(
     seed=42,
 ):
     DEFAULT_SYSTEM_MESSAGE = "You are a helpful assistant."
-    FUNCTION_SUFIX = "你可以使用这些函数来帮助用户解决问题: "
+    FUNCTION_SUFIX = "你可以使用这些工具来帮助用户解决问题: "
     IGNORE_INDEX = -100
 
     def tokenization(example):
-        conversation, functions = example['conversation'], example.get('functions')
+        conversation, tools = example['conversation'], example.get('tools')
         
         token_ids = []
         labels = []
@@ -73,8 +73,8 @@ def buid_instruction_dataset(
             conversation = conversation[1:]
         else:
             system_msg = f"<|SYSTEM|>{DEFAULT_SYSTEM_MESSAGE}"
-        if functions:
-            system_msg += f"\n\n{FUNCTION_SUFIX}{json.dumps(json.loads(functions), ensure_ascii=False)}"
+        if tools:
+            system_msg += f"\n\n{FUNCTION_SUFIX}{tools}"
         system_ids = tokenizer.encode(system_msg)
         token_ids += system_ids
         labels += [IGNORE_INDEX] * len(system_ids)
@@ -86,15 +86,13 @@ def buid_instruction_dataset(
                 labels += [IGNORE_INDEX] * len(user_ids)
             elif msg["role"] == "assistant":
                 assistant_text = "<|ASSISTANT|>" + (f"<|CONTENT|>{msg['content']}" if msg["content"] else "")
-                fcs = msg.get("function_call")
-                if fcs:
-                    fcs = json.loads(fcs)
+                if fcs := msg.get("tool_calls"):
                     for fc in fcs:
-                        assistant_text += f"<|FUNCTION_CALL|>{fc['name']}<|PARAMETERS|>{json.dumps(fc['arguments'], ensure_ascii=False)}"
+                        assistant_text += f"<|FUNCTION_CALL|>{fc['function']['name']}<|PARAMETERS|>{fc['function']['arguments']}"
                 assistant_ids = tokenizer.encode(assistant_text) + [tokenizer.eos_token_id]
                 token_ids += assistant_ids
                 labels += [IGNORE_INDEX] * 1 + assistant_ids[1:]
-            elif msg["role"] == "function":
+            elif msg["role"] == "tool":
                 function_ids = tokenizer.encode("<|FUNCTION_OUTPUT|>" + msg['content'])
                 token_ids += function_ids
                 labels += [IGNORE_INDEX] * len(function_ids)
@@ -138,7 +136,7 @@ def buid_instruction_dataset(
     all_datasets = concatenate_datasets(all_datasets).shuffle(seed=seed)
     return dict(train_dataset=all_datasets, eval_dataset=None)
 
-        
+
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
