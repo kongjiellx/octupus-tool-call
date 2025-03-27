@@ -40,7 +40,7 @@ def rank0_print(*args):
 
 
 def load_model(model_path):
-    model = transformers.LlamaForCausalLM.from_pretrained(
+    model = transformers.AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
@@ -64,7 +64,7 @@ def buid_instruction_dataset(
 
     def tokenization(example):
         conversation, tools = example['conversation'], example.get('tools')
-        
+
         token_ids = []
         labels = []
 
@@ -97,17 +97,17 @@ def buid_instruction_dataset(
                 token_ids += function_ids
                 labels += [IGNORE_INDEX] * len(function_ids)
         results = {
-            'input_ids': token_ids, 
-            'labels': labels, 
+            'input_ids': token_ids,
+            'labels': labels,
         }
         return results
-    
+
     def pad(example):
         return {
             "input_ids": example["input_ids"] + [tokenizer.pad_token_id] * (max_seq_length - len(example["input_ids"])),
             "labels": example["labels"] + [-100] * (max_seq_length - len(example["input_ids"]))
         }
-    
+
     dataset_and_split = []
     with open(data_path, "r") as fp:
         for line in fp:
