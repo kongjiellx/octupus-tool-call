@@ -25,7 +25,7 @@ import openai.types.chat.chat_completion_chunk as chat_chunk_types
 import openai.types.chat.completion_create_params as create_types
 from openai.types.chat import ChatCompletionToolChoiceOptionParam
 import xgrammar as xgr
-from transformers import PreTrainedTokenizer, AutoTokenizer
+from transformers import PreTrainedTokenizer, AutoTokenizer, AutoConfig
 from vllm import SamplingParams
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -40,6 +40,7 @@ app = FastAPI()
 engine = None
 
 global tokenizer
+global full_vocab_size
 global grammar_compiler
 global engine_args
 
@@ -126,14 +127,21 @@ class VLLMLogitsProcessor(object):
         if tc := req.get("tool_choice"):
             self.tool_choice = tc
 
+        if req.get("reasoning_effort") and "Qwen3" in engine_args.model:
+            self.enable_thinking = True
+        else:
+            self.enable_thinking = False
+
         schema = build_json_schema(req.get("tools"), self.tool_choice)
         if schema is not None:
-            compiled_grammar = grammar_compiler.compile_json_schema(json.dumps(schema))
-            self.grammar_matcher = xgr.GrammarMatcher(compiled_grammar, terminate_without_stop_token=True)
+            json_grammar = xgr.Grammar.from_json_schema(schema)
+            extra_grammar = xgr.Grammar.from_ebnf('root ::= [\\n]')
+            added_grammar = grammar_compiler.compile_grammar(xgr.Grammar.concat(extra_grammar, json_grammar, extra_grammar))
+            self.grammar_matcher = xgr.GrammarMatcher(added_grammar, terminate_without_stop_token=True)
         else:
             self.grammar_matcher = None
 
-        self.token_bitmask = xgr.allocate_token_bitmask(1, len(tokenizer))
+        self.token_bitmask = xgr.allocate_token_bitmask(1, full_vocab_size)
         self.first_time_param = True
 
     def __call__(self, input_ids: List[int], scores: torch.Tensor) -> torch.Tensor:
@@ -163,8 +171,10 @@ class VLLMLogitsProcessor(object):
             if input_ids[-1] == tokenizer.eos_token_id:
                 self.state = State.END
                 # print("-> END")
-            else:
+            elif input_ids[-1] == tokenizer.convert_tokens_to_ids(TOOL_CALL_TOKEN):
                 self.state = State.TOOL_CALL
+                self.grammar_matcher.reset()
+                self.first_time_param = True
                 # print("-> TOOL_CALL")
         else:  # self.state == State.END
             pass
@@ -193,10 +203,14 @@ class VLLMLogitsProcessor(object):
             else:
                 self.mask[tokenizer.convert_tokens_to_ids(TOOL_CALL_END_TOKEN)] = 0
         elif self.state == State.SELECT:
-            if self.req.get("parallel_tool_calls", False):
-                self.mask[[tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("\n")]] = 0
-            else:
-                self.mask[tokenizer.eos_token_id] = 0
+            if input_ids[-1] == tokenizer.encode("\n")[0]:  # 第二次
+                self.mask[tokenizer.convert_tokens_to_ids(TOOL_CALL_TOKEN)] = 0
+            else: #
+                if self.req.get("parallel_tool_calls", True):
+                    # tokenizer.convert_tokens_to_ids("\n") 会是 None，和encode的结果不一样，不知道为啥
+                    self.mask[[tokenizer.eos_token_id, tokenizer.encode("\n")[0]]] = 0
+                else:
+                    self.mask[tokenizer.eos_token_id] = 0
         elif self.state == State.END:
             self.mask[tokenizer.eos_token_id] = 0
         return scores + self.mask
@@ -348,11 +362,14 @@ async def chat_completion(request: Request) -> Response:
         if m["role"] == "assistant" and m["content"] is None:
             m["content"] = ""
 
-    token_ids = tokenizer.apply_chat_template(req["messages"], tools=req.get("tools"), tokenize=True, add_generation_prompt=True, enable_thinking=False)
+    if req.get("reasoning_effort") and "Qwen3" in engine_args.model:
+        token_ids = tokenizer.apply_chat_template(req["messages"], tools=req.get("tools"), tokenize=True, add_generation_prompt=True, enable_thinking=True)
+    else:
+        token_ids = tokenizer.apply_chat_template(req["messages"], tools=req.get("tools"), tokenize=True, add_generation_prompt=True, enable_thinking=False)
 
     sampling_params = SamplingParams(
         max_tokens=req.get("max_tokens", 1024),
-        temperature=req.get("temperature", 0.01),
+        temperature=req.get("temperature", 0.0),
     )
     processor = VLLMLogitsProcessor(req, tokenizer)
     sampling_params.logits_processors = [processor]
@@ -377,7 +394,7 @@ async def chat_completion(request: Request) -> Response:
                 final_output = request_output
 
             assert final_output is not None
-            return JSONResponse(final_output.dict())
+            return JSONResponse(final_output.model_dump())
     except Exception as e:
         logging.exception(e)
         return JSONResponse({"error": "unknown error"})
@@ -394,8 +411,10 @@ if __name__ == "__main__":
     engine = AsyncLLMEngine.from_engine_args(engine_args)
 
     tokenizer = AutoTokenizer.from_pretrained(engine_args.model)
+    config = AutoConfig.from_pretrained(engine_args.model)
+    full_vocab_size = config.vocab_size
 
-    tokenizer_info = xgr.TokenizerInfo.from_huggingface(tokenizer, vocab_size=len(tokenizer))
+    tokenizer_info = xgr.TokenizerInfo.from_huggingface(tokenizer, vocab_size=full_vocab_size)
     grammar_compiler = xgr.GrammarCompiler(tokenizer_info)
 
     uvicorn.run(
