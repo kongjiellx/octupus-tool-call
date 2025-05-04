@@ -1,0 +1,11 @@
+[project]
+name = "inference"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.77.0",
+    "vllm>=0.8.5.post1",
+    "xgrammar>=0.1.18",
+]
