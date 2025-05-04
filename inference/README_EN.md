@@ -106,3 +106,12 @@ response = client.chat.completions.create(
 - **Grammar Control**: xgrammar
 - **Async Processing**: asyncio
 - **Model Support**: Qwen2.5/Qwen3 series models 
+
+## BFCL Test Results
+
+| Overall Acc | Model | Non-Live AST Acc | Non-Live Simple AST | Non-Live Multiple AST | Non-Live Parallel AST | Non-Live Parallel Multiple AST | Live Acc | Live Simple AST | Live Multiple AST | Live Parallel AST | Live Parallel Multiple AST | Multi Turn Acc | Multi Turn Base | Multi Turn Miss Func | Multi Turn Miss Param | Multi Turn Long Context | Relevance Detection | Irrelevance Detection |
+|------------|-------|------------------|---------------------|----------------------|----------------------|-------------------------------|----------|-----------------|-------------------|-------------------|--------------------------|----------------|-----------------|---------------------|----------------------|------------------------|-------------------|----------------------|
+| 65.44% | Qwen3-32b-reasoning | 85.67% | 74.67% | 95.50% | 84.50% | 88.00% | 77.17% | 82.56% | 75.97% | 87.50% | 66.67% | 34.12% | 38.50% | 41.00% | 30.50% | 26.50% | 66.67% | 79.91% |
+| 61.64% | Qwen3-32b | 87.44% | 74.75% | 91.50% | 92.00% | 91.50% | 78.10% | 79.84% | 78.92% | 68.75% | 75.00% | 20.62% | 31.00% | 13.50% | 20.00% | 18.00% | 83.33% | 79.00% |
+| 61.19% | Qwen2.5-32b | 85.54% | 71.67% | 92.00% | 92.00% | 86.50% | 77.43% | 76.36% | 75.69% | 50.00% | 58.33% | 21.12% | 28.00% | 22.50% | 21.50% | 12.50% | 72.22% | 81.93% |
+| 58.47% | Qwen2.5-7b | 88.50% | 77.00% | 96.00% | 91.50% | 89.50% | 74.86% | 75.58% | 72.74% | 62.50% | 79.17% | 12.50% | 17.50% | 13.00% | 11.50% | 8.00% | 88.89% | 81.62% |
